@@ -1,11 +1,5 @@
 [
   {
-    "suggestions": "Line:433Column:30TypeError: end is not iterable"
-  },
-  {
-    "suggestions": "Line:433Column:30TypeError: end is not iterable"
-  },
-  {
-    "suggestions": "Line:473Column:30TypeError: end is not iterable"
+    "suggestions": "can you make the score different for all players? a client should only get their own score"
   }
 ]

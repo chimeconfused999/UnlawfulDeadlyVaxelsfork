@@ -6,7 +6,9 @@ import { dirname } from "path";
 import OpenAI from "openai";
 import * as readline from "readline";
 import path from "path";
-
+import { onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup, User } from "firebase/auth";
+import { doc, getDoc, setDoc } from "firebase/firestore";
+import { auth, db } from "./firebaseConfig";
 const port = "3000";
 const app = express();
 const mySecret = process.env["OPENAI_API_KEY"];
@@ -17,288 +19,525 @@ const dataFilePath = path.join(__dirname, "data.json");
 const jsonData = readJSONFile(dataFilePath);
 var additionalcomments = "";
 
+const clients = []; // This array will store all connected clients for SSE
+var pending = false;
+type CurrentUser = User | null;
 
+// Server-Sent Events endpoint
+app.get("/stream-updates", (req, res) => {
+  // Set headers for SSE connection
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
 
-//iframe stuff
+  // Add client to the list
+  clients.push(res);
 
+  // Remove client when they disconnect
+  req.on("close", () => {
+    clients.splice(clients.indexOf(res), 1);
+  });
+});
+
+// Function to send reload message to all connected clients
+function reloadClients() {
+  clients.forEach((client) => {
+    client.write("data: reload\n\n"); // Send "reload" message to trigger page reload
+  });
+}
+function messageClients(message: string) {
+  clients.forEach((client) => {
+    client.write(`data: ${message}\n\n`); // Send "reload" message to trigger page reload
+  });
+}
+app.use(express.json()); // This middleware is required to parse JSON bodies in POST requests
+
+app.post("/confirm-and-run", (req, res) => {
+  const gametype = req.body.data;
+  if (!pending) {
+    pending = !pending;
+    updates(gametype);
+  } else {
+    messageClients("UPDATE ALREADY PENDING");
+  }
+
+  // Call the function to handle the update
+  // Trigger page reload on all clients
+  res.sendStatus(200); // Send a success status
+});
+
+app.post("/revert", (req, res) => {
+  if (!pending) {
+    revertjson(); // Call the function to handle revert
+    reloadClients(); // Trigger page reload on all clients
+  } else {
+    messageClients("UPDATE ALREADY PENDING");
+  }
+  res.sendStatus(200); // Send a success status
+});
+app.post("/submit-comments", (req, res) => {
+  if (!pending) {
+    additionalcomments = req.body.additionalcomments;
+    console.log("Received additional comments:", additionalcomments);
+    const allData = {
+      suggestions: additionalcomments,
+    };
+    // Add the new data
+    addData(allData, "errors.json");
+  } else {
+    messageClients("UPDATE ALREADY PENDING");
+    //replace with something something else so it doe
+  }
+
+  res.sendStatus(200); // Respond with a success status
+});
+app.post("/skibidi", (req, res) => {
+  console.log(req.body);
+  messageClients(JSON.stringify(req.body));
+  res.sendStatus(200);
+});
+
+// Your main GET route to serve the HTML page
 app.get("/", (req, res) => {
   const dataFilePath = path.join(__dirname, "data.json");
-  const errorFilePath = path.join(__dirname, "errors.json");
 
   // Reading JSON data from file
   const jsonData = readJSONFile(dataFilePath);
 
+  let title = "";
+  let htmlcode = "";
+  let csscode = "";
+  let jscode = "";
+  let mpcode = "";
+
   if (jsonData.length > 0) {
-    var title = jsonData[jsonData.length - 1].title;
-    var htmlcode = jsonData[jsonData.length - 1].html;
-    var csscode = jsonData[jsonData.length - 1].css;
-    var jscode = jsonData[jsonData.length - 1].javascript;
-  } else {
-    var title = "" as any;
-    var htmlcode = "" as any;
-    var csscode = "" as any;
-    var jscode = "" as any;
+    let revert = 1;
+    do {
+      const lastEntry = jsonData[jsonData.length - revert];
+      title = lastEntry.title || "";
+      htmlcode = lastEntry.html || "";
+      csscode = lastEntry.css || "";
+      jscode = lastEntry.javascript || "";
+      mpcode = lastEntry.multiplayer || "";
+      revert++;
+    } while (
+      (htmlcode === "" ||
+        csscode === "" ||
+        htmlcode.includes("rest of code") ||
+        csscode.includes("rest of code") ||
+        jscode.includes("rest of code")) &&
+      revert <= jsonData.length
+    );
   }
-  var revert = 2;
-    if(htmlcode&&jscode&&csscode){
-    while(htmlcode == "" || csscode == "" || jscode == "" || htmlcode.includes("rest of code")|| csscode.includes("rest of code") || jscode.includes("rest of code")){
-    var htmlcode = jsonData[jsonData.length - revert].html;
-    var csscode = jsonData[jsonData.length - revert].css;
-    var jscode = jsonData[jsonData.length - revert].javascript;
-    revert++;
-    }
-  }
-  app.use(express.json());
-  app.post("/submit-comments", (req, res) => {
-    additionalcomments = req.body.additionalcomments;
-    console.log("Received additional comments:", additionalcomments);
-    const allData = {
-      suggestions: additionalcomments
-    };
-    // Add the new data
-    addData(allData,"errors.json");
-    
-    res.sendStatus(200); // Respond with a success status
-  });
-  app.post("/confirm-and-run", (req, res) => {
-    const gametype = req.body.data
-    updates(gametype);
-    res.sendStatus(200); // Send a success response
-  });
-  app.post("/revert",(req,res)=>{
-    revertjson();
-    res.sendStatus(200);
-  })
-  
 
-  
+  var downloadedhtml = htmlcode.replace(/<\/script>/g, "<\\/script>");
+
   res.send(`
-        <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Iframe Content Updater</title>
-                <style>
-                    ${csscode}
-                    * {
-                      margin: 0;
-                      padding: 0;
-                      box-sizing: border-box;
-                      font-family: 'Roboto', sans-serif;
-                    }
-                    #addbut{
-                    position:relative;
-                    z-index:10000;
-                    left:5px;
-                    top: -15px;
-                    display:flex;
-                    justify-content:center;
-                    align-items:center;
-                    flex-direction:row;
-                    
-                    gap:5px;
-          
-                    }
-                    #dbut2{
-                      position: absolute;
-                      z-index:10000;
-                     
-                      right:5px;
-                      bottom:5px;
-                      display:flex;
-                      justify-content:center;
-                      align-items:center;
-                      flex-direction:row;
-                      width: 300px;
-                      flex-wrap:wrap;
-                      gap:5px;
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${title || "Content Updater"}</title>
+        <style>
+            ${csscode}
+             /* Global Styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Roboto', sans-serif;
+        }
 
-                    }
-                    button {
-                      padding: 10px 20px;
-                      background-color: #0072ff;
-                      color: white;
-                      border: none;
-                      border-radius: 5px;
-                      cursor: pointer;
-                      transition: background-color 0.3s;
-                    }
+        body {
+            background: linear-gradient(to bottom right, #1a2a6c, #b21f1f, #fdbb2d);
+            color: #fff;
+            line-height: 1.6;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+        }
 
-                    button:hover {
-                      background-color: #005bb5;
-                    }
-                    .ctextarea {
-                      width: 300px;
-                      height: 750px;
-                      z-index:10000;
-                    }
-                    #siteheader {
-                    font-size: 2rem;
-                    font-weight: bold;
-                      margin-bottom: 40px;
-                      background: radial-gradient(circle at 44.1% 78.8%, #071931 0%, #374f62 99.4%);
-                      color: white;
-                      display: flex;
-                      align-items: center;
-                      
-                      padding-right: 50px;
-                      position: relative;
-                      top: 0;
-                      left: 0;
-                      justify-content: center;
-                      z-index: 1000;
-                      width: 100%;
-                      height: 100px;
-                      box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
-                      transition: background 0.3s ease, color 0.3s ease, box-shadow 0.3s ease, height 0.3s;
-                    }
-                    #gameWindow{
-                    padding:3px;
-                    }
-                </style>
-                <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-            </head>
-            <body>
-            <div id="siteheader">
-                <span>Kamavy Studios</span>
+        /* Header */
+        #siteheader {
+            font-size: 2rem;
+            font-weight: bold;
+            text-align: center;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 20px;
+            width: 100%;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+            transition: background 0.3s ease, height 0.3s ease;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+        }
+
+        #siteheader span {
+            display: inline-block;
+            background: linear-gradient(to right, #ff512f, #dd2476);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* Button Styling */
+        button {
+            padding: 10px 18px;
+            background-color: #ff6f61;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s ease-in-out;
+            font-size: 1rem;
+        }
+
+        button:hover {
+            background-color: #ff443d;
+            transform: scale(1.05);
+            box-shadow: 0 4px 10px rgba(255, 69, 58, 0.5);
+        }
+
+        /* Textarea Styling */
+        textarea {
+            border-radius: 5px;
+            padding: 10px;
+            width: 100%;
+            max-width: 250px; /* Reduced size */
+            min-height: 100px; /* Reduced size */
+            margin: 10px;
+            border: none;
+            outline: none;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+            resize: none;
+            transition: all 0.3s ease-in-out;
+        }
+
+        textarea:focus {
+            transform: scale(1.02);
+            border: 2px solid #ff6f61;
+        }
+
+        /* Container for Buttons and Text Areas */
+        #addbut, #dbut2 {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            margin: 20px;
+            gap: 10px;
+        }
+
+        /* Game Window */
+        #gameWindow {
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            width: 90%; /* Increased size */
+            height: 80vh; /* Increased size */
+            margin: 20px auto;
+        }
+
+        /* Animations */
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        body, button, textarea {
+            animation: fadeIn 0.8s ease-in-out;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            textarea {
+                width: 90%;
+            }
+
+            button {
+                width: 100%;
+                font-size: 0.9rem;
+            }
+
+            #gameWindow {
+                width: 100%; /* Adjust for smaller screens */
+                height: 60vh; /* Adjust for smaller screens */
+            }
+        }
+        </style>
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    </head>
+    <body>
+        <div id="siteheader">
+            <span>The Vyxels Project</span>
+        </div>
+        <div id="addbut">
+            <button id="sendadditional" onclick="send(true)">Send Comments</button>
+            <div id="adminButtons" style="display: none;">
+              <button id="confirmRunButton">UPDATE</button>
+              <button id="revertButton">REVERT</button>
             </div>
-              <div id = "addbut"><button id = "sendadditional" onclick = "send(true)">Send Comments</button>
-              <button id = "confirmRunButton">UPDATE</button>
-              <button id = "revertButton">REVERT</button>
-               <button onclick="openFullscreen()">Fullscreen</button>
-              
-              </div>
-               <div id = "dbut2"><textarea id="additional" placeholder="Enter additional comments"></textarea>
-              <textarea id="gametype" placeholder = "Put the type of game you want to have.">${title}</textarea></div>
-                ${htmlcode}
-                <!--<div class="controls">
-                    <button id="updateButton" onclick="run()">Update Iframe</button>
-                    
-                    <button onclick="openFullscreen()">Fullscreen</button>
-                    <button onclick = "clearlocal()" id = "clearlocalStor">Clear</button>
-                </div>
-                <h1>Iframe Content Updater</h1>
+            <button onclick="openFullscreen()">Fullscreen</button>
+
+          <button id="loginButton" style="display: none;" onclick="googleSignIn()">Login</button>
+          <button id="logoutButton" style="display: none;" onclick="signOutOfAccount()">Logout</button>
+
+            <button id="downloadZip">Download ZIP</button>
+        </div>
+        <div id="dbut2">
+            <textarea id="additional" placeholder="Enter additional comments"></textarea>
+            <textarea id="gametype" placeholder="Put the type of game you want to have.">${title}</textarea>
+        </div>
+
+        ${htmlcode}
+      <script type="module">
+        // Import the Firebase modules
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js';
+        import { getAuth, signOut, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js';
+        import { getFirestore, doc, getDoc, setDoc } from 'https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js';
+
+        // Firebase configuration
+        const firebaseConfig = {
+          apiKey: "AIzaSyBRPPWo0yAWyN2ZwSUv1UX9FnMnFo_tft4",
+          authDomain: "vyxels-ebe71.firebaseapp.com",
+          projectId: "vyxels-ebe71",
+          storageBucket: "vyxels-ebe71.appspot.com",
+          messagingSenderId: "47088410162",
+          appId: "1:47088410162:web:bde486ca6e1f8e5c61262b",
+          measurementId: "G-FCRZBN52EQ"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
 
 
-                <h2>HTML</h2>
 
-                <textarea id="html-content" placeholder="Enter HTML code"></textarea>
-                <h2>CSS</h2>
-                <textarea id="css-content" placeholder="Enter CSS code"></textarea>
-                <h2>JavaScript</h2>
-                <textarea id="js-content" placeholder="Enter JavaScript code"></textarea>-->
-                
-              <script>
-              function openFullscreen() {
-    var elem = document.getElementById("gameWindow"); // This will select the entire HTML document
-    if (elem.requestFullscreen) {
-        elem.requestFullscreen();
-    } else if (elem.webkitRequestFullscreen) { // Safari
-        elem.webkitRequestFullscreen();
-    } else if (elem.msRequestFullscreen) { // IE/Edge
-        elem.msRequestFullscreen();
+        // Sign-out function
+        async function signOutOfAccount() {
+          try {
+            await signOut(auth);
+            console.log("Signed out successfully");
+          } catch (error) {
+            console.error("Sign out error:", error);
+          }
+        }
+
+        async function checkAdminPrivileges(userEmail) {
+  try {
+    // Reference the "admin" document
+    const adminDocRef = doc(db, 'admins', 'admin'); // Adjusted to match your structure
+    const adminDoc = await getDoc(adminDocRef);
+
+    if (adminDoc.exists()) {
+      const adminData = adminDoc.data();
+
+      // Check if the user's email matches any of the fields
+      return Object.values(adminData).includes(userEmail);
+    } else {
+      console.error('Admin document does not exist');
+      return false;
     }
+  } catch (error) {
+    console.error('Error checking admin privileges:', error);
+    return false;
+  }
 }
 
-              function send(bool){
-                if(bool == true){
-                    var additional = document.getElementById("additional").value;
-                    additionalcomments = additional;
-                    
-                }
-              else{
-                var additional = bool;
-                additionalcomments = additional;
-                
-              }
+        // Google sign-in function
+        async function googleSignIn() {
+          const provider = new GoogleAuthProvider();
+          try {
+            const result = await signInWithPopup(auth, provider);
+            const user = result.user;
 
-                  $.ajax({
+            if (user) {
+              console.log("Signed in as:", user.displayName || user.email);
+
+              // Firestore logic to store user information
+              const userRef = doc(db, "users", user.uid);
+              const userSnap = await getDoc(userRef);
+
+              if (!userSnap.exists()) {
+                await setDoc(userRef, {
+                  email: user.email,
+                  name: user.displayName,
+                  uid: user.uid
+                });
+              }
+            }
+          } catch (error) {
+            console.error("Error during sign-in:", error);
+          }
+        }
+
+        window.signOutOfAccount = signOutOfAccount;
+        window.googleSignIn = googleSignIn;
+        onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    // User is logged in
+    document.getElementById('loginButton').style.display = 'none';
+    document.getElementById('logoutButton').style.display = 'block';
+
+    const isAdmin = await checkAdminPrivileges(user.email);
+    if (isAdmin) {
+      document.getElementById('adminButtons').style.display = 'block';
+    } else {
+      document.getElementById('adminButtons').style.display = 'none'; // Explicitly hide admin buttons for non-admins
+      console.log('User is not an admin');
+    }
+  } else {
+    document.getElementById('logoutButton').style.display = 'none';
+    document.getElementById('loginButton').style.display = 'block';
+
+    // Explicitly hide admin buttons when user logs out
+    document.getElementById('adminButtons').style.display = 'none';
+    console.log('No user logged in');
+  }
+});
+
+      </script>
+
+        <script>
+     ${jscode}
+document.getElementById('downloadZip').addEventListener('click', () => {
+              // Retrieve the content from the text areas
+              const htmlContent = \`${downloadedhtml}\`;
+              const cssContent = \`${csscode}\`;
+              const jsContent = \`${jscode}\`;
+
+              // Initialize JSZip
+              const zip = new JSZip();
+
+              // Add files to the zip
+              zip.file('index.html', htmlContent);
+              zip.file('styles.css', cssContent);
+              zip.file('script.js', jsContent);
+
+              // Generate the zip file
+              zip.generateAsync({ type: 'blob' }).then((content) => {
+                // Create a link to download the zip
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(content);
+                link.download = '${title}.zip';
+                link.click();
+              });
+            });
+
+
+            function openFullscreen() {
+                var elem = document.getElementById("gameWindow");
+                if (elem.requestFullscreen) {
+                    elem.requestFullscreen();
+                } else if (elem.webkitRequestFullscreen) {
+                    elem.webkitRequestFullscreen();
+                } else if (elem.msRequestFullscreen) {
+                    elem.msRequestFullscreen();
+                }
+            }
+
+            function send(bool) {
+                
+                var additional = bool === true ? document.getElementById("additional").value : bool;
+                $.ajax({
                     type: "POST",
                     url: "/submit-comments",
                     contentType: "application/json",
-                    data: JSON.stringify({ additionalcomments: additionalcomments }),
-                    success: function(response) {
-                      console.log("Data sent successfully:", response);
-                    },
-                    error: function(error) {
-                      console.error("Error sending data:", error);
-                    }
-                  });
-                }
-                document.getElementById("confirmRunButton").onclick = function() {
-                  $.ajax({
+                    data: JSON.stringify({ additionalcomments: additional }),
+                    success: function(response) { console.log("Data sent successfully:", response); },
+                    error: function(error) { console.error("Error sending data:", error); }
+                });
+            }
+
+            document.getElementById("confirmRunButton").onclick = function() {
+                $.ajax({
                     type: "POST",
                     url: "/confirm-and-run",
-                    success: function(response) {
-                      console.log("Confirm and run initiated successfully:", response);
-                    },
                     contentType: "application/json",
-                      data: JSON.stringify({ data: document.getElementById("gametype").value }),
-                    error: function(error) {
-                      console.error("Error initiating confirm and run:", error);
-                    }
-                  });
-                };
-                document.getElementById("revertButton").onclick = function() {
-                
-                  $.ajax({
+                    data: JSON.stringify({ data: document.getElementById("gametype").value }),
+                    success: function(response) { console.log("Confirm and run initiated successfully:", response); 
+                    },
+                    error: function(error) { console.error("Error initiating confirm and run:", error); }
+                });
+            };
+
+            document.getElementById("revertButton").onclick = function() {
+                $.ajax({
                     type: "POST",
                     url: "/revert",
-                    success: function(response) {
-                      console.log("Confirm and run initiated successfully:", response);
-                    },
-                    error: function(error) {
-                      console.error("Error initiating confirm and run:", error);
-                    }
-                  });
-                };
-                window.onerror = function(message, source, lineno, colno, error) {
-                    lineno2 = lineno-181;
+                    success: function(response) { console.log("Revert initiated successfully:", response); 
+                    reloadClients();},
+                    error: function(error) { console.error("Error initiating revert:", error); }
+                });
+            };
 
-                    bool =  "Line:" + lineno2 + "Column:" + colno + error;   
-                    
-                    send(bool)
+            // Set up SSE listener to reload page when triggered
+            const eventSource = new EventSource('/stream-updates');
+            eventSource.onmessage = function(event) {
+                const emessage = event.data;
+                if (emessage === "reload") {
+                    location.reload(); // Reload the page when a "reload" message is received
+                } else if (emessage === "UPDATE ALREADY PENDING"){
+                  alert(emessage);
+            
+                  //can also replace with something else 
+                } else {
+                  message = JSON.parse(emessage);
+                  console.log(message)
+                  
+
+                   ${mpcode}
+                }
+            };
+                
+            
+
+            window.onerror = function(message, source, lineno, colno, error) {
+
+
+                    bool =  error; 
+                    if(typeof bool==="string" && bool != {}){
+                      send(bool)
+                    }
                 };
-              </script>
-              <script>
-                
-                var additionalcomments = "";
-               
-                
-                ${jscode}
-                
-                 
-                 
-                
-                
-               
-              </script>
-              <br>
-              <textarea class = "ctextarea">${htmlcode}</textarea>
-                <textarea class = "ctextarea">${csscode}</textarea>
-                <textarea class = "ctextarea">${jscode}</textarea>
-            </body>
-           </html>
-`);
-  
-  
+        </script>
+        <br>
+        <textarea class="ctextarea">${htmlcode}</textarea>
+        <textarea class="ctextarea">${csscode}</textarea>
+        <textarea class="ctextarea">${jscode}</textarea>
+        <textarea class="ctextarea">${mpcode}</textarea>  
+    </body>
+    </html>
+  `);
 });
 
 app.listen(port, () => {
   console.log(`Server is running at http://localhost:${port}`);
-
 });
 
 if (jsonData.length == 0) {
-
   console.log("data.json is empty or invalid, generating initial data");
 
   //chatgpt will generate code for a game.
 
   //API key is not there
   if (process.env.OPENAI_API_KEY === "") {
-    console.error(`You haven't set up your API key yet. Open the Secrets Tool and add OPENAI_API_KEY as a secret.`);
+    console.error(
+      `You haven't set up your API key yet. Open the Secrets Tool and add OPENAI_API_KEY as a secret.`,
+    );
     process.exit(1);
   }
 
@@ -309,8 +548,7 @@ if (jsonData.length == 0) {
   const GPT4Message = [
     {
       role: "system",
-      content:
-        "Answer with something that consistently works on all examples that you have seen. All CSS code in style.css. Make sure to always add HTML CSS and Javascript code as long as there are parts required in the code. Don't include an explanation or title. Just answer the question. Do not include other things that aren't part of the code. All Code should strictly go in the order of HTML, then CSS, then  Javascript. For each PART of the code, end and start with ```, for example ```<!DOCTYPE html></html>```. Use ```css for the css and ```javascript for the javascript. Additionally, for the html section, only include the code between the <body></body> not including those two themselves",
+      content:"Generate complete HTML, CSS, and JavaScript code with all parts included, separating sections as follows: Use '```html', '```css', and '```javascript', ending each section with '```'. If multiplayer is needed, use the following code: $.ajax({type: \"POST\", url: \"/skibidi\", data: JSON.stringify([put data here]), contentType: \"application/json\", success: response => console.log(\"Confirm and run initiated successfully:\", response), error: error => console.error(\"Error initiating confirm and run:\", error)}); . Provide a '```multiplayer' to handle receiving data, which is inside of the variable 'message' in this section. There is no need for any sort of WebSockets or anything else, just normal data and javascript code. All servers will be provided. Make sure to call any functions defined in '```multiplayer' inside of itself. HTML should contain only <body> content, using <script type='module'> for libraries. CSS should style all UI for desktop and mobile without images, using only colored <div>s. Avoid overlaying text on matching background colors. For JavaScript: Include all game logic and send JSON data to the server using AJAX at /skibidi with a data: tag. Use the message variable for communication, Ensure all variables are defined and code is error-free. Fix bugs if line/column numbers are provided. Avoid ${} syntax entirely. If no changes are needed, include the original code, Add an update menu that pauses the game, shows updates, and allows resuming. Otherwise, enhance gameplay mechanics, ensure compatibility with mobile and desktop, and integrate single-player and multiplayer seamlessly. Don't put comments explaining the code.",
     },
     {
       role: "user",
@@ -322,13 +560,12 @@ if (jsonData.length == 0) {
   let GPT4 = async (message) => {
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
-      temperature: 0.4, 
+      temperature: 0.4,
       messages: message,
     });
 
     return response.choices[0].message.content;
   };
-
 
   const allcode = (await GPT4(GPT4Message)) || "";
 
@@ -374,6 +611,15 @@ if (jsonData.length == 0) {
       js = allcode.substring(jsStartIndex + jsMarker.length, jsEndIndex).trim();
     }
   }
+  const mpMarker = "```multiplayer";
+  const mpStartIndex = allcode.indexOf(mpMarker);
+  let mp = "";
+  if (mpStartIndex !== -1) {
+    const mpEndIndex = allcode.indexOf("```", mpStartIndex + mpMarker.length);
+    if (mpEndIndex !== -1) {
+      mp = allcode.substring(mpStartIndex + mpMarker.length, mpEndIndex).trim();
+    }
+  }
   console.log(allcode);
   console.log("\n");
   console.log(html);
@@ -382,89 +628,82 @@ if (jsonData.length == 0) {
   console.log("\nENDOFCSS\n");
   console.log(js);
   console.log("\nENDOFJS\n");
+  console.log(mp);
+  console.log("\nENDOFMP\n");
+  
   const allData = {
     title: "",
     html: html,
     css: css,
     javascript: js,
+    multiplayer: mp,
   };
 
   // Add the new data
-  addData(allData,"data.json");
+  addData(allData, "data.json");
 } else {
   console.log("Data.json is not empty, skipping initial data generation");
 }
-// function confirmAndRun(): void {
-//   const rl = readline.createInterface({
-//     input: process.stdin,
-//     output: process.stdout,
-//   });
 
-//   rl.question(
-//     "\nDo you want to UPDATE? Type 'yes' to confirm: ",
-//     (answer) => {
-//       if (answer.toLowerCase() === "yes") {
-//         updates();
-//       } else {
-//         console.log("Action cancelled.");
-//       }
-//       rl.close();
-//     },
-//   );
-// }
-
-// // Running the confirmation function
-// confirmAndRun();
-function updates(updatetype:string) {
-  console.log(updatetype)
+function updates(updatetype: string) {
+  console.log(updatetype);
   console.log("Started updating");
 
   const dataFilePath = path.join(__dirname, "data.json");
   const errorFilePath = path.join(__dirname, "errors.json");
-  var title, htmlupdate, cssupdate, javascriptupdate;
+  var title, htmlupdate, cssupdate, javascriptupdate, multiplayerupdate;
 
   // Accessing specific values
   const jsonData = readJSONFile(dataFilePath);
   const errorData = readJSONFile(errorFilePath);
-  const allsuggestions = []
-  for (let i = 0; i < errorData.length; i++){
-    console.log(allsuggestions.includes(errorData[i].suggestions))
-    if(!allsuggestions.includes(errorData[i].suggestions)){
-      allsuggestions.push(errorData[i].suggestions)
+  const allsuggestions = [];
+  for (let i = 0; i < errorData.length; i++) {
+    console.log(allsuggestions.includes(errorData[i].suggestions));
+    if (!allsuggestions.includes(errorData[i].suggestions)) {
+      allsuggestions.push(errorData[i].suggestions);
     }
   }
-  console.log(allsuggestions)
+  console.log(allsuggestions);
   // Accessing specific values
   if (jsonData) {
     title = jsonData[jsonData.length - 1].title;
     htmlupdate = jsonData[jsonData.length - 1].html;
     cssupdate = jsonData[jsonData.length - 1].css;
     javascriptupdate = jsonData[jsonData.length - 1].javascript;
-    console.log("\n"+allsuggestions+ "\n\nadditional comments logged\n");
+    multiplayerupdate = jsonData[jsonData.length - 1].multiplayer;
+    console.log("\n" + allsuggestions + "\n\nadditional comments logged\n");
   } else {
     console.error("Failed to read JSON data from file.");
   }
-  if (title != updatetype){
+  if (title != updatetype) {
     console.log("Title is not the same as the update type, making new game");
-    for (let i = jsonData.length-1; i > 0; i--){
-      if(jsonData[i].title == updatetype){
+    for (let i = jsonData.length - 1; i > 0; i--) {
+      if (jsonData[i].title == updatetype) {
         htmlupdate = jsonData[i].html;
         cssupdate = jsonData[i].css;
         javascriptupdate = jsonData[i].javascript;
-        break
-      } else{
+        multiplayerupdate = jsonData[i].multiplayer;
+        break;
+      } else {
         htmlupdate = jsonData[0].html;
         cssupdate = jsonData[0].css;
         javascriptupdate = jsonData[0].javascript;
+        multiplayerupdate = jsonData[0].multiplayer;
       }
     }
-    
   }
   var revert = 2;
-    while(htmlupdate == "" || cssupdate == "" || javascriptupdate == "" || htmlupdate.includes("rest of code")|| cssupdate.includes("rest of code") || javascriptupdate.includes("rest of code")){
+  while (
+    htmlupdate == "" ||
+    cssupdate == "" ||
+    htmlupdate.includes("rest of code") ||
+    cssupdate.includes("rest of code") ||
+    javascriptupdate.includes("rest of code")
+  ) {
     var htmlupdate = jsonData[jsonData.length - revert].html;
     var cssupdate = jsonData[jsonData.length - revert].css;
     var javascriptupdate = jsonData[jsonData.length - revert].javascript;
+    var multiplayerupdate = jsonData[jsonData.length - revert].multiplayer;
     revert++;
   }
 
@@ -476,11 +715,12 @@ function updates(updatetype:string) {
   const openai = new OpenAI({
     apiKey: mySecret,
   });
-  
+
   const GPT4Message = [
     {
       role: "system",
-      content: "Generate the complete code for HTML, CSS, and Javascript without omitting any parts at all. Always include HTML, CSS, and JavaScript code as needed, in that order. Fix any bugs that have a provided line number (in the Javascript code) and column number. If the previous code doesn't need to be changed, put it in anyway. Use '```html' for HTML, '```css' for CSS, and '```javascript' for JavaScript, ending each section with '```'. For the HTML section, include only the code within the <body> tags.Do not include explanations, titles, comments, or anything that could cause errors. Never use images, instead use colored divs. Analyze existing code to identify non-repetitive features and make creative updates that enhance gameplay and mechanics. Ensure that your code is error-free, defines variables accurately, and does not shorten the original code. Include an update menu that displays updates, pauses the game when opened, and provides a simple way to close it.",
+      content:"Generate complete HTML, CSS, and JavaScript code with all parts included, separating sections as follows: Use '```html', '```css', and '```javascript', ending each section with '```'. If multiplayer is needed, use the following code: $.ajax({type: \"POST\", url: \"/skibidi\", data: JSON.stringify([put data here]), contentType: \"application/json\", success: response => console.log(\"Confirm and run initiated successfully:\", response), error: error => console.error(\"Error initiating confirm and run:\", error)}); . Provide a '```multiplayer' to handle receiving data, which is inside of the variable 'message' in this section. There is no need for any sort of WebSockets or anything else, just normal data and javascript code. All servers will be provided. Make sure to call any functions defined in '```multiplayer' inside of itself. HTML should contain only <body> content, using <script type='module'> for libraries. CSS should style all UI for desktop and mobile without images, using only colored <div>s. Avoid overlaying text on matching background colors. For JavaScript: Include all game logic and send JSON data to the server using AJAX at /skibidi with a data: tag. Use the message variable for communication, Ensure all variables are defined and code is error-free. Fix bugs if line/column numbers are provided. Avoid ${} syntax entirely. If no changes are needed, include the original code, Add an update menu that pauses the game, shows updates, and allows resuming. Otherwise, enhance gameplay mechanics, ensure compatibility with mobile and desktop, and integrate single-player and multiplayer seamlessly. Don't put comments explaining the code.",
+
     },
     {
       role: "user",
@@ -495,11 +735,15 @@ function updates(updatetype:string) {
         "\n```\n" +
         javascriptupdate +
         "\n```\n" +
+        "multiplayer features(also js): " +
+        "\n```\n" +
+        multiplayerupdate +
+        "\n```\n" +
         "CSS: " +
         "\n```\n" +
         cssupdate +
         "\n```" +
-        "Bugs/Suggestions: " + 
+        "Bugs/Suggestions: " +
         "\n'''\n" +
         allsuggestions,
     },
@@ -564,131 +808,69 @@ function updates(updatetype:string) {
           .trim();
       }
     }
+    const mpMarker2 = "```multiplayer";
+    const mpStartIndex2 = allcode2.indexOf(mpMarker2);
+    let mp2 = "";
+    if (mpStartIndex2 !== -1) {
+      const mpEndIndex2 = allcode2.indexOf(
+        "```",
+        mpStartIndex2 + mpMarker2.length,
+      );
+      if (mpEndIndex2 !== -1) {
+        mp2 = allcode2
+          .substring(mpStartIndex2 + mpMarker2.length, mpEndIndex2)
+          .trim();
+      }
+    }
 
     clearjson(errorFilePath);
-
-    //THE FOLLOWING CODE IS USED TO do the {...} thing but it currently does not work
-
-    // let temp = js2;
-    // while (js2.indexOf("{...}") != -1) {
-    //   let tempindex = temp.indexOf("...");
-    //   //console.log(tempindex);
-    //   //console.log(temp.charAt(tempindex+3)); // }
-    //   //console.log(temp.charAt(tempindex-1)); // {
-    //   let functionName = "";
-    //   let i = 0;
-    //   let j = 0;
-    //   while (temp.charAt(tempindex - i) != "(") {
-    //     i++;
-    //   }
-    //   while (temp.charAt(tempindex - j - i) != " ") {
-    //     j++;
-    //   }
-    //   functionName = temp.substring(tempindex - i - j + 1, tempindex - i);
-    //   //console.log(functionName);
-
-    //   //getting code of previous version
-    //   let tempindex2 = javascriptupdate.indexOf("function " + functionName);
-    //   tempindex2 += j + 9; // add nine cuz function and space is 9 characters.
-    //   console.log(javascriptupdate.charAt(tempindex2));
-    //   let z = 0;
-    //   while (javascriptupdate.charAt(tempindex2 + z) != "{") {
-    //     z++;
-    //   }
-    //   console.log(javascriptupdate.charAt(tempindex2 + z));
-    //   let n = 0;
-    //   let x = 0; //count of {
-    //   let y = 0; //count of }
-    //   while (javascriptupdate.charAt(tempindex2 + z + n + 1) != "}" || x >= y) {
-    //     if (javascriptupdate.charAt(tempindex2 + z + n + 1) == "{") {
-    //       x++;
-    //     }
-    //     if (javascriptupdate.charAt(tempindex2 + z + 1 + n) == "}") {
-    //       y++;
-    //       if (x >= y) {
-    //         break;
-    //       }
-    //     }
-    //     n++;
-    //   }
-
-    //   //console.log(javascriptupdate.substring(tempindex2+3,tempindex2+2+z));
-    //   let tempcode = javascriptupdate.substring(
-    //     tempindex2 + 3,
-    //     tempindex2 + 2 + z,
-    //   );
-    //   //console.log("\n" + tempcode);
-    //   //tempcode is the code in the function of the previous version.
-
-    //   const startPart = javascriptupdate.substring(0, tempindex2 + 3);
-    //   const endPart = javascriptupdate.substring(tempindex2 + 3 + z);
-    //   js2 = startPart + tempcode + endPart;
-    //   //console.log(js2);
-
-    //   //console.log(temp.substring(tempindex-i-j+1,tempindex-1));
-    //   // console.log(temp.charAt(temp.indexOf("function "  +functionName)-1));
-    //   const removePart = temp.substring(
-    //     0,
-    //     temp.indexOf("function " + functionName) - 1,
-    //   );
-    //   //console.log(removePart);
-    //   const removeendPart = temp.substring(tempindex + 3);
-    //   //console.log(removeendPart);
-    //   temp = removePart + removeendPart;
-    //   //console.log(temp);
-    //   console.log(temp + "\n------------MSGAFTER------------\n");
-    // }
-    // if (temp != js2) {
-    //   console.log(js2);
-    //   console.log(temp + "\n------------MSGAFTER------------\n");
-    // }
-    //summon kai zhang im here kai zhang
 
     const allData = {
       title: updatetype,
       html: html2,
       css: css2,
       javascript: js2,
+      multiplayer: mp2,
     };
     // Add the new data
-    addData(allData,"data.json");
+    addData(allData, "data.json");
+    reloadClients();
+    pending = !pending;
   })();
-  
 }
-function revertjson(): void{
+function revertjson(): void {
   const errorFilePath = path.join(__dirname, "errors.json");
-  const filePath = './data.json';
+  const filePath = "./data.json";
 
-  fs.readFile(filePath, 'utf-8', (err, data) => {
+  fs.readFile(filePath, "utf-8", (err, data) => {
     if (err) {
-        console.error('Error reading the file:', err);
-        return;
+      console.error("Error reading the file:", err);
+      return;
     }
 
     try {
-        // Parse the JSON data (assuming it's an array)
-        let jsonData = JSON.parse(data);
+      // Parse the JSON data (assuming it's an array)
+      let jsonData = JSON.parse(data);
 
-        // Remove the last element in the array
-        jsonData.pop();
+      // Remove the last element in the array
+      jsonData.pop();
 
-        // Convert the updated array back to JSON
-        const updatedJson = JSON.stringify(jsonData, null, 2);
+      // Convert the updated array back to JSON
+      const updatedJson = JSON.stringify(jsonData, null, 2);
 
-        // Write the updated JSON back to the file
-        fs.writeFile(filePath, updatedJson, 'utf-8', (err) => {
-            if (err) {
-                console.error('Error writing to the file:', err);
-            } else {
-                clearjson(errorFilePath)
-                console.log('Last element removed and file updated successfully');
-            }
-        });
+      // Write the updated JSON back to the file
+      fs.writeFile(filePath, updatedJson, "utf-8", (err) => {
+        if (err) {
+          console.error("Error writing to the file:", err);
+        } else {
+          clearjson(errorFilePath);
+          console.log("Last element removed and file updated successfully");
+        }
+      });
     } catch (parseError) {
-        console.error('Error parsing the JSON data:', parseError);
+      console.error("Error parsing the JSON data:", parseError);
     }
   });
-
 }
 //functions
 function readJSONFile(filename: string): any {
@@ -702,7 +884,6 @@ function readJSONFile(filename: string): any {
 }
 
 function addData(newData: object, filePath: string) {
-  
   // Ensure the file exists
   if (!existsSync(filePath)) {
     // Create an empty JSON array if the file doesn't exist
@@ -735,30 +916,32 @@ function addData(newData: object, filePath: string) {
   console.log("Data added to file.");
 }
 function clearjson(file: string): void {
-    // Read the JSON file
-    fs.readFile(file, 'utf8', (err, data) => {
-        if (err) {
-            console.error('Error reading the file:', err);
-            return;
-        }
+  // Read the JSON file
+  fs.readFile(file, "utf8", (err, data) => {
+    if (err) {
+      console.error("Error reading the file:", err);
+      return;
+    }
 
-        // Parse the JSON data
-        let jsonData = JSON.parse(data);
+    // Parse the JSON data
+    let jsonData = JSON.parse(data);
 
-        // Clear the JSON data (set to an empty object or array)
-        // Example: if your JSON is an object
-        jsonData = [];
+    // Clear the JSON data (set to an empty object or array)
+    // Example: if your JSON is an object
+    jsonData = [];
 
-        // Example: if your JSON is an array
-        // jsonData = [];
+    // Example: if your JSON is an array
+    // jsonData = [];
 
-        // Write the cleared data back to the file
-        fs.writeFile(file, JSON.stringify(jsonData, null, 2), 'utf8', (err) => {
-            if (err) {
-                console.error('Error writing to the file:', err);
-                return;
-            }
-            console.log('File has been cleared successfully!');
-        });
+    // Write the cleared data back to the file
+    fs.writeFile(file, JSON.stringify(jsonData, null, 2), "utf8", (err) => {
+      if (err) {
+        console.error("Error writing to the file:", err);
+        return;
+      }
+      console.log("File has been cleared successfully!");
     });
+  });
 }
+
+
