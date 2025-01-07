@@ -1,0 +1,16 @@
+[
+  {
+    "title": "home",
+    "html": "<div id=\"homepage\">\n   <div class=\"link-container\">\n    <a href=\"/Block%20Blast\" class=\"link\">Go to Block Blast</a>\n  </div>\n      <div class=\"link-container\">\n        <a href=\"/dumbass\" class=\"link\">Go to dumbass</a>\n      </div>\n      <div class=\"link-container\">\n        <a href=\"/Clicker%20Game\" class=\"link\">Go to Clicker Game</a>\n      </div>\n      <div class=\"link-container\">\n        <a href=\"/minesweeper\" class=\"link\">Go to minesweeper</a>\n      </div></div>\n<script type=\"module\">\n  // No JavaScript needed for homepage links\n</script>",
+    "css": "body {\n  margin: 0;\n  font-family: Arial, sans-serif;\n  background-color: #f3e5f5;\n}\n\n#homepage {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  justify-content: center;\n  height: 100vh;\n  background-color: #f3e5f5;\n}\n\n.link-container {\n  margin: 20px;\n  padding: 40px;\n  background: linear-gradient(45deg, #7b1fa2, #ff7043);\n  border-radius: 12px;\n  width: 300px;\n  text-align: center;\n  transition: transform 0.3s;\n}\n\n.link-container:hover {\n  transform: scale(1.05);\n}\n\n.link {\n  color: white;\n  text-decoration: none;\n  font-size: 22px;\n}",
+    "javascript": "// No JavaScript needed for homepage links",
+    "multiplayer": "// No multiplayer features needed for homepage links"
+  },
+  {
+    "title": "home",
+    "html": "<div id=\"homepage\">\n   <div class=\"link-container\">\n    <a href=\"/Block%20Blast\" class=\"link\">Go to Block Blast</a>\n  </div>\n  <div class=\"link-container\">\n    <a href=\"/dumbass\" class=\"link\">Go to Dumbass</a>\n  </div>\n  <div class=\"link-container\">\n    <a href=\"/Clicker%20Game\" class=\"link\">Go to Clicker Game</a>\n  </div>\n  <div class=\"link-container\">\n    <a href=\"/minesweeper\" class=\"link\">Go to Minesweeper</a>\n  </div>\n      <div class=\"link-container\">\n        <a href=\"/chat%20room\" class=\"link\">Go to chat room</a>\n      </div>\n      <div class=\"link-container\">\n        <a href=\"/chat%20room\" class=\"link\">Go to chat room</a>\n      </div></div>\n<script type=\"module\">\n  // No JavaScript needed for homepage links\n</script>",
+    "css": "body {\n  margin: 0;\n  font-family: Arial, sans-serif;\n  background-color: #f3e5f5;\n}\n\n#homepage {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  justify-content: center;\n  height: 100vh;\n  background-color: #f3e5f5;\n}\n\n.link-container {\n  margin: 20px;\n  padding: 40px;\n  background: linear-gradient(45deg, #7b1fa2, #ff7043);\n  border-radius: 12px;\n  width: 300px;\n  text-align: center;\n  transition: transform 0.3s;\n}\n\n.link-container:hover {\n  transform: scale(1.05);\n}\n\n.link {\n  color: white;\n  text-decoration: none;\n  font-size: 22px;\n}",
+    "javascript": "// No JavaScript needed for homepage links",
+    "multiplayer": "// No multiplayer features needed for homepage links"
+  }
+]
